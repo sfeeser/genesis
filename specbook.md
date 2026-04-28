@@ -429,14 +429,14 @@ The Control Surface is the developer’s primary interface to Genesis. It enforc
 
 ### 5.1. Greenfield Protocol
 
-To bootstrap or evolve a project, provide the **Soul** (Vision) and **Physics** (SpecBook). Genesis automatically detects and resumes from existing state:
+To bootstrap or evolve a project, provide the specifications in specbook.yaml  Genesis automatically detects and resumes from existing state:
 
 ```bash
 # Fresh (greenfield) project
-./saayn genesis -v vision.md -s specbook.yaml --target ./my-app
+./gen init 
 
 # Existing project (resumes automatically)
-./saayn genesis --target ./my-app
+./gen enrich
 ```
 
 - If `.genesis/genome.json` exists, it is used as the primary source of truth and the SQLite database is rebuilt on demand.
@@ -484,7 +484,6 @@ The `cmd/saayn` package is the **only** component allowed to touch OS-level inpu
 ```plaintext
 🧬 GENESIS v7.0
 --------------------------------------------------------------------------------
-📄 Vision:     Distributed Worker pattern identified in vision.md
 📜 SpecBook:   14 nodes defined in specbook.yaml
 📦 Genome:     Loaded from .genesis/genome.json (export_hash: a1b2c3...)
 🏗️  Scaffold:   Building authoritative graph... ✓ (8 packages, 27 nodes)
