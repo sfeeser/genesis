@@ -266,6 +266,8 @@ type Store interface {
 
 	// BeginWorkset opens a transaction for staging atomic SCC mutations.
 	BeginWorkset(ctx context.Context, worksetID string, boundary SCCBoundary) (Workset, error)
+	ListNodes(ctx context.Context) ([]NodeDetail, error)
+	GetEnvironment(ctx context.Context) (EnvironmentSentinel, error)
 }
 
 // Workset represents a staged mutation boundary (Ch 2.1.3).
@@ -295,3 +297,5 @@ func isSHA256Hex(s string) bool {
 	}
 	return true
 }
+
+

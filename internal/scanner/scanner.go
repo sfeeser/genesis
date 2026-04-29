@@ -42,13 +42,10 @@ type ParsedSymbol struct {
 // Analyzer defines the L4 contract for verifying and extracting Go source code.
 // It acts as a pure function over byte payloads, possessing zero filesystem authority.
 type Analyzer interface {
-	// Scan extracts and normalizes a specific symbol from a given byte payload.
-	// It deterministically strips cosmetic changes (whitespace, comments)
-	// to ensure stable L-ID generation across structural equivalents.
 	Scan(ctx context.Context, source []byte, id identity.NodeID) (ParsedSymbol, error)
-
-	// VerifySymbol ensures that a piece of raw synthesized source code
-	// perfectly matches the expected physical identity and signature constraints.
-	// It fails closed if the syntax is invalid or the signature drifts.
 	VerifySymbol(ctx context.Context, source []byte, id identity.NodeID, expectedSignature string) (ParsedSymbol, error)
+	
+	// ScanAll extracts all valid physical symbols from a source payload.
+	// Required by L6 (Surgeon) to cryptographically prove adjacent node integrity.
+	ScanAll(ctx context.Context, source []byte) ([]ParsedSymbol, error)
 }

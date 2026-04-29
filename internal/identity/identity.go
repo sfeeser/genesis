@@ -277,3 +277,10 @@ func unescapeSegment(s string) (string, error) {
 	}
 	return b.String(), nil
 }
+
+// ComputeContractID deterministically hashes the canonical signature payload.
+// It relies on the existing L1 logic hash primitive to guarantee cryptographic uniformity.
+func ComputeContractID(signature string) string {
+	return ComputeLogicHash([]byte(signature))
+}
+

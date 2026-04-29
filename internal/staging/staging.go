@@ -13,10 +13,14 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -34,6 +38,7 @@ var (
 	ErrUnresolvedNode    = errors.New("cannot resolve physical package directory for given NodeID")
 	ErrModuleMismatch    = errors.New("node module does not match current workspace module")
 	ErrToolchainFailure  = errors.New("failed to execute physical go toolchain probe")
+	ErrAmbiguousNode     = errors.New("multiple matching physical nodes found in package")
 )
 
 // Workspace defines the strictly governed L5 physical disk boundary.
@@ -42,6 +47,7 @@ type Workspace interface {
 	ReadWorkspaceFile(ctx context.Context, relativePath string) ([]byte, error)
 	CaptureEnvironment(ctx context.Context, buildTags, buildFlags []string) (registry.EnvironmentSentinel, error)
 	ResolvePackageDir(id identity.NodeID) (string, error)
+	ResolveSourceFile(id identity.NodeID) (string, error)
 }
 
 // localWorkspace is the concrete implementation of the physical OS boundary.
@@ -209,6 +215,78 @@ func (w *localWorkspace) ResolvePackageDir(id identity.NodeID) (string, error) {
 	return relPath, nil
 }
 
+// ResolveSourceFile deterministically locates the exact physical workspace file
+// containing the target symbol by analyzing the package directory's AST.
+// It fails closed if the identity matches multiple declarations (ambiguity).
+func (w *localWorkspace) ResolveSourceFile(id identity.NodeID) (string, error) {
+	pkgDir, err := w.ResolvePackageDir(id)
+	if err != nil {
+		return "", err
+	}
+
+	absDir, err := w.securePath(pkgDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to secure package directory: %w", err)
+	}
+
+	fset := token.NewFileSet()
+	// Parse the directory, ignoring tests unless specifically auditing test bounds
+	filter := func(info os.FileInfo) bool {
+		return !strings.HasSuffix(info.Name(), "_test.go")
+	}
+	
+	pkgs, err := parser.ParseDir(fset, absDir, filter, 0)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse physical package directory: %w", err)
+	}
+
+	var pkgNames []string
+	for name := range pkgs {
+		pkgNames = append(pkgNames, name)
+	}
+	sort.Strings(pkgNames)
+
+	var matchedFile string
+
+	for _, pkgName := range pkgNames {
+		pkg := pkgs[pkgName]
+		
+		var filePaths []string
+		for fp := range pkg.Files {
+			filePaths = append(filePaths, fp)
+		}
+		sort.Strings(filePaths)
+
+		for _, filePath := range filePaths {
+			astFile := pkg.Files[filePath]
+			for _, decl := range astFile.Decls {
+				match, matchErr := matchesDeclIdentity(decl, id)
+				if matchErr != nil {
+					return "", fmt.Errorf("failed evaluating AST declaration: %w", matchErr)
+				}
+				if match {
+					if matchedFile != "" {
+						return "", ErrAmbiguousNode
+					}
+					matchedFile = filePath
+				}
+			}
+		}
+	}
+
+	if matchedFile == "" {
+		return "", ErrFileNotFound
+	}
+
+	// Mathematically prove the relative path containment
+	rel, relErr := filepath.Rel(w.rootDir, matchedFile)
+	if relErr != nil || strings.HasPrefix(rel, "..") {
+		return "", ErrPathEscape
+	}
+
+	return rel, nil
+}
+
 // --- Internal Security Bounds ---
 
 // securePath constructs and fully evaluates a target path, explicitly rejecting
@@ -276,3 +354,68 @@ func (w *localWorkspace) hashPhysicalFile(ctx context.Context, relativePath stri
 	hash := sha256.Sum256(data)
 	return hex.EncodeToString(hash[:]), nil
 }
+
+// matchesDeclIdentity deeply verifies that an AST declaration mathematically maps to the NodeID,
+// enforcing strict checks on Symbol, Kind, Lexical Token (Var/Const), Receiver Shape, and Arity.
+func matchesDeclIdentity(decl ast.Decl, target identity.NodeID) (bool, error) {
+	switch d := decl.(type) {
+	case *ast.FuncDecl:
+		if target.Kind() != "func" || d.Name.Name != target.Symbol() {
+			return false, nil
+		}
+
+		hasRecv := d.Recv != nil && len(d.Recv.List) > 0
+		if target.ReceiverShape() == "none" && hasRecv {
+			return false, nil
+		}
+		if target.ReceiverShape() != "none" && !hasRecv {
+			return false, nil
+		}
+		if hasRecv {
+			_, isPtr := d.Recv.List[0].Type.(*ast.StarExpr)
+			if target.ReceiverShape() == "ptr" && !isPtr {
+				return false, nil
+			}
+			if target.ReceiverShape() == "val" && isPtr {
+				return false, nil
+			}
+		}
+
+		// Arity Proof: Count exactly how many parameters the signature defines.
+		var arity int
+		if d.Type != nil && d.Type.Params != nil {
+			for _, field := range d.Type.Params.List {
+				if len(field.Names) == 0 {
+					arity++ // Unnamed parameter
+				} else {
+					arity += len(field.Names) // Named parameters
+				}
+			}
+		}
+		if arity != target.Arity() {
+			return false, nil
+		}
+
+		return true, nil
+	case *ast.GenDecl:
+		for _, spec := range d.Specs {
+			if ts, ok := spec.(*ast.TypeSpec); ok {
+				if target.Kind() == "type" && d.Tok == token.TYPE && ts.Name.Name == target.Symbol() {
+					return true, nil
+				}
+			}
+			if vs, ok := spec.(*ast.ValueSpec); ok {
+				for _, name := range vs.Names {
+					if target.Kind() == "var" && d.Tok == token.VAR && name.Name == target.Symbol() {
+						return true, nil
+					}
+					if target.Kind() == "const" && d.Tok == token.CONST && name.Name == target.Symbol() {
+						return true, nil
+					}
+				}
+			}
+		}
+	}
+	return false, nil
+}
+
